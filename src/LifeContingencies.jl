@@ -442,6 +442,15 @@ function AnnuityImmediate(lc::L; certain = nothing, start_time = 0, frequency = 
     return AnnuityImmediate(lc.life, lc.int; certain, start_time, frequency)
 end
 
+"""
+    survival(Insurance,time)
+
+The survivorship for the given insurance from time zero to `time`.
+
+"""
+function MortalityTables.survival(ins::I, t) where {I<:Insurance}
+    survival(ins.life,t)
+end
 
 """
     survival(Insurance)
@@ -451,12 +460,13 @@ The survivorship vector for the given insurance.
 To get the fully computed and allocated vector, call `collect(survival(...))`.
 """
 function MortalityTables.survival(ins::I) where {I<:Insurance}
-    return Iterators.map(t -> survival(ins.life, t - 1), timepoints(ins))
+    return Iterators.map(t -> survival(ins, t - 1), timepoints(ins))
 end
 
-function MortalityTables.survival(ins::Annuity)
-    return Iterators.map(t -> survival(ins.life, t), timepoints(ins))
+function MortalityTables.survival(ins::A) where {A<:Annuity}
+    return Iterators.map(t -> survival(ins, t), timepoints(ins))
 end
+
 
 """
     discount(Insurance)
@@ -619,11 +629,34 @@ end
 """
     present_value(Insurance)
 
-The actuarial present value of the given insurance.
+The actuarial present value of the given insurance benefits.
 """
 function ActuaryUtilities.present_value(ins::T) where {T<:Insurance}
     cfs = cashflows(ins)
     times = timepoints(ins)
+    yield = ins.int
+    pv = present_value(yield, cfs, times)
+    return pv
+end
+
+"""
+    present_value(Insurance,`time`)
+
+The actuarial present value of the given insurance benefits, as if you were standing at `time`. 
+
+For example, if the given `Insurance` has *decremented* payments `[1,2,3,4,5]` at times `[1,2,3,4,5]` and you call `pv(ins,3)`, 
+you will get the present value of the payments `[4,5]` at times `[1,2]`.
+
+To get an undecremented present value, divide by the survivorship to that timepoint:
+
+```julia
+present_value(ins,10) / survival(ins,10)
+```
+"""
+function ActuaryUtilities.present_value(ins::T,time) where {T<:Insurance}
+    ts =timepoints(ins)
+    times = (t - time for t in ts if t > time)
+    cfs = (cf for (cf,t) in zip(cashflows(ins),ts) if t > time)
     yield = ins.int
     pv = present_value(yield, cfs, times)
     return pv
@@ -667,7 +700,33 @@ end
     decrement(lc::LifeContingency,to_time)
     decrement(lc::LifeContingency,from_time,to_time)
 
-Return the probablity of death for the given LifeContingency. 
+Return the probability of death for the given LifeContingency, with decrements beginning at time zero. 
+    
+# Examples
+
+```julia-repl
+julia> q = [.1,.2,.3,.4];
+
+julia> l = SingleLife(mortality=q);
+
+julia> survival(l,1)
+0.9
+
+julia> decrement(l,1)
+0.09999999999999998
+
+julia> survival(l,1,2)
+0.8
+
+julia> decrement(l,1,2)
+0.19999999999999996
+
+julia> survival(l,1,3)
+0.5599999999999999
+
+julia> decrement(l,1,3)
+0.44000000000000006
+```
 """
 mt.decrement(lc::LifeContingency, from_time, to_time) = 1 - survival(lc.life, from_time, to_time)
 
@@ -676,7 +735,34 @@ mt.decrement(lc::LifeContingency, from_time, to_time) = 1 - survival(lc.life, fr
     survival(lc::LifeContingency,from_time,to_time)
     survival(lc::LifeContingency,to_time)
 
-Return the probability of survival for the given LifeContingency. 
+Return the probability of survival for the given LifeContingency, with decrements beginning at time zero. 
+    
+# Examples
+
+```julia-repl
+julia> q = [.1,.2,.3,.4];
+
+julia> l = SingleLife(mortality=q);
+
+julia> survival(l,1)
+0.9
+
+julia> decrement(l,1)
+0.09999999999999998
+
+julia> survival(l,1,2)
+0.8
+
+julia> decrement(l,1,2)
+0.19999999999999996
+
+julia> survival(l,1,3)
+0.5599999999999999
+
+julia> decrement(l,1,3)
+0.44000000000000006
+    
+    ```
 """
 mt.survival(lc::LifeContingency, to_time) = survival(lc.life, 0, to_time)
 mt.survival(lc::LifeContingency, from_time, to_time) = survival(lc.life, from_time, to_time)
@@ -700,11 +786,17 @@ function mt.survival(l::JointLife, from_time, to_time)
 end
 
 function mt.survival(ins::LastSurvivor, assump::JointAssumption, l::JointLife, from_time, to_time)
+    a = survival(ins,assump,l,from_time)
+    b = survival(ins,assump,l,to_time)
+    return b/a
+end
+
+function mt.survival(ins::LastSurvivor, assump::JointAssumption, l::JointLife, to_time)
     to_time == 0 && return 1.0
 
     l1, l2 = l.lives
-    ₜpₓ = survival(l1.mortality, l1.issue_age + from_time, l1.issue_age + to_time, l1.fractional_assump)
-    ₜpᵧ = survival(l2.mortality, l2.issue_age + from_time, l2.issue_age + to_time, l2.fractional_assump)
+    ₜpₓ = survival(l1.mortality, l1.issue_age, l1.issue_age + to_time, l1.fractional_assump)
+    ₜpᵧ = survival(l2.mortality, l2.issue_age, l2.issue_age + to_time, l2.fractional_assump)
     return ₜpₓ + ₜpᵧ - ₜpₓ * ₜpᵧ
 end
 
